@@ -20,6 +20,7 @@ from ..models.pretransforms import WaveletPretransform, PatchedPretransform
 
 from .losses import MelSpectrogramLoss, MultiLoss, AuralossLoss, ValueLoss, L1Loss, LossWithTarget, MSELoss, HubertLoss, CLAPLoss, TimeDomainMMDLoss
 from .losses import auraloss as auraloss
+from .losses import foa_spatial as foa_spatial
 from .utils import create_optimizer_from_config, create_scheduler_from_config, log_audio, log_image, log_metric, log_point_cloud, logger_project_name, StaggeredLogger
 
 from pytorch_lightning.utilities.rank_zero import rank_zero_only
@@ -27,6 +28,10 @@ from ..interface.aeiou import audio_spectrogram_image, tokens_spectrogram_image
 from .ema import EMA
 from einops import rearrange
 from contextlib import nullcontext
+
+def fuma_to_acn_sn3d(x):  # x: (B, 4, T) in FuMa order [W, X, Y, Z]
+    w, xx, yy, zz = x[:, 0], x[:, 1], x[:, 2], x[:, 3]
+    return torch.stack([w * (2 ** 0.5), yy, zz, xx], dim=1)  # [W, Y, Z, X]
 
 def set_requires_grad(model, req_grad: bool):
     for p in model.parameters():
@@ -336,6 +341,13 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
                         "mrstft": 1.0,
                     }
                 },
+                "spatial": {
+                    "type": "foa_spatial",
+                    "config" : {},
+                    "weights" : {
+                        "foa_spatial" : 1.0,
+                    }
+                },
                 "time": {
                     "type": "l1",
                     "config": {},
@@ -345,12 +357,17 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
                 }
             }
 
-        self.loss_config = loss_config
+        self.lclass_config = loss_config
 
         # Spectral reconstruction loss
         if 'spectral' in loss_config:
             stft_loss_args = loss_config['spectral']['config']
-            if self.autoencoder.out_channels == 2:
+            if self.autoencoder.out_channels == 4:
+                self.sdstft = auraloss.MultiResolutionSTFTLoss(sample_rate=sample_rate, **stft_loss_args)
+                self.vmstft = foa_spatial.FOAVirtualMicLoss(
+                    auraloss.MultiResolutionSTFTLoss(sample_rate=sample_rate, **stft_loss_args)
+                )
+            elif self.autoencoder.out_channels == 2: #change to >= 2?
                 self.sdstft = auraloss.SumAndDifferenceSTFTLoss(sample_rate=sample_rate, **stft_loss_args)
                 self.lrstft = auraloss.MultiResolutionSTFTLoss(sample_rate=sample_rate, **stft_loss_args)
             else:
@@ -468,11 +485,15 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
                 self.gen_loss_modules += [
                     AuralossLoss(self.sdstft, target_key = 'reals', input_key = 'decoded', name='mrstft_loss', weight=self.loss_config['spectral']['weights']['mrstft'], decay = stft_loss_decay),
                 ]
-
-                if self.autoencoder.out_channels == 2:
+                if self.autoencoder.out_channels == 2: #add multichannel spectogram?
                     # Add left and right channel reconstruction losses in addition to the sum and difference
                     self.gen_loss_modules += [
                         AuralossLoss(self.lrstft, target_key = 'reals',  input_key = 'decoded', name='lr_stft_loss', weight=self.loss_config['spectral']['weights']['mrstft'], decay = stft_loss_decay)
+                    ]
+                if self.autoencoder.out_channels == 4:
+                    self.gen_loss_modules += [
+                        AuralossLoss(self.vmstft, target_key = 'reals',  input_key = 'decoded', name='vm_stft_loss', weight=self.loss_config['spectral']['weights']['mrstft'], decay = stft_loss_decay)
+                                            
                     ]
 
         # Direct latent distillation loss (L1/L2 between student and teacher latents)
@@ -595,6 +616,25 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
                 name = f'ild'
                 self.semantic_regressor_names.append(name)
                 self.gen_loss_modules.append(L1Loss(key_a= name + '_output',key_b =name + '_target',name = name + '_regressor_mse', weight = weight * 0.1, decay = decay))
+
+        if 'spatial' in loss_config:
+            ##from foa_spatial import FOASpatialCovariance, SpatialCovarianceLoss
+            cfg = loss_config['spatial']
+            self.spatial_extractor = foa_spatial.FOASpatialCovariance(sample_rate, **cfg.get('extractor', {}))
+            self.spatial_regressor_warmup = cfg.get('warmup', 10000)
+            
+            # latent-side
+            self.spatial_regressor = torch.nn.Conv1d(
+                self.autoencoder.latent_dim, self.spatial_extractor.out_channels, kernel_size=1)
+            self.gen_loss_modules.append(L1Loss(
+                key_a='spatial_output', key_b='spatial_target', name='spatial_regressor_l1',
+                weight=cfg['weights']['regressor'], decay=cfg.get('decay', 1.0)))
+            
+            # output-side
+            self.gen_loss_modules.append(LossWithTarget(
+                foa_spatial.SpatialCovarianceLoss(sample_rate, **cfg.get('extractor', {})),
+                target_key='reals', input_key='decoded',
+                name='spatial_cov_loss', weight=cfg['weights']['output']))
 
         self.losses_gen = MultiLoss(self.gen_loss_modules)
 
@@ -847,6 +887,19 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
         if not encoder_grad_disabled:
             self.latent_std = 0.99 * self.latent_std + 0.01*latent_std
 
+            if hasattr(self, "spatial_regressor"):
+                target = self.spatial_extractor(encoder_input)
+
+                if self.global_step < self.spatial_regressor_warmup:
+                    output = self.spatial_regressor(latents.detach())
+                else:
+                    output = self.spatial_regressor(latents)
+
+                loss_info['spatial_output'] = output
+                loss_info['spatial_target'] = target
+                
+                pass
+
             if hasattr(self, "semantic_transforms"):
                 spectrogram = self.spectrogram(encoder_input)
                 for i, transform in enumerate(self.semantic_transforms):
@@ -892,7 +945,7 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
                 loss_info["diffusion_target"] = (noise - scaled_latents) 
                 loss_info["diffusion_output"] = self.generative_model(noised_inputs, t) 
                 log_dict['train/diffusion_loss_zero'] = torch.nn.functional.mse_loss(loss_info["diffusion_target"], torch.zeros_like(loss_info["diffusion_target"])).detach()
-            
+
 
         # Encode with teacher model for distillation
         if self.teacher_model is not None:
@@ -919,11 +972,19 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
         loss_info["decoded"] = decoded
         loss_info["reals"] = reals
 
+        # Change to handle arbitrary amount of channels
         if self.autoencoder.out_channels == 2:
             loss_info["decoded_left"] = decoded[:, 0:1, :]
             loss_info["decoded_right"] = decoded[:, 1:2, :]
             loss_info["reals_left"] = reals[:, 0:1, :]
             loss_info["reals_right"] = reals[:, 1:2, :]
+        
+        if self.autoencoder.out_channels == 4:
+            # Individual B-format channels (ACN order: W, Y, Z, X)
+            for i, name in enumerate(["w", "y", "z", "x"]):
+                loss_info[f"decoded_{name}"] = decoded[:, i:i+1, :]
+                loss_info[f"reals_{name}"] = reals[:, i:i+1, :]
+
 
         # Distillation
         if self.teacher_model is not None:
@@ -1036,7 +1097,7 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
 
         # Train the generator
         else:
-
+        
             loss, losses = self.losses_gen(loss_info)
 
             opt_gen.zero_grad()

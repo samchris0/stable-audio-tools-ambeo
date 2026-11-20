@@ -39,7 +39,7 @@ train = [
     "auraloss==0.4.0",
     "descript-audio-codec==1.0.0",
     "encodec==0.1.1",
-    "inf-cl",
+    "inf-cl; sys_platform == 'linux'",
     "laion-clap==1.1.4",
     "pandas==2.0.2",
     "prefigure==0.0.9",
@@ -65,8 +65,8 @@ explicit = true
 
 [tool.uv.sources]
 torch = [
-  { index = "pytorch-cu126", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" }
+  { index = "pytorch-cu126", marker = "(sys_platform == 'linux' and platform_machine == 'x86_64') or sys_platform == 'win32'" }
 ]
 torchaudio = [
-  { index = "pytorch-cu126", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" }
+  { index = "pytorch-cu126", marker = "(sys_platform == 'linux' and platform_machine == 'x86_64') or sys_platform == 'win32'" }
 ]
