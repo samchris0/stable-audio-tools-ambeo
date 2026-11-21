@@ -172,8 +172,8 @@ class FOAVirtualMicLoss(torch.nn.Module):
         self.register_buffer("D", D, persistent=False)
 
     def forward(self, pred, target):  # (B, 4, T)
-        p = torch.einsum("nc,bct->bnt", self.D, pred)
-        t = torch.einsum("nc,bct->bnt", self.D, target)
+        p = torch.einsum("nc,bct->bnt", self.D, pred.float())
+        t = torch.einsum("nc,bct->bnt", self.D, target.float())
         return self.mrstft(p, t)
 
 if __name__ == "__main__":

@@ -339,13 +339,15 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
                     },
                     "weights": {
                         "mrstft": 1.0,
+                        "vm_mrstft": 1.0
                     }
                 },
                 "spatial": {
                     "type": "foa_spatial",
                     "config" : {},
                     "weights" : {
-                        "foa_spatial" : 1.0,
+                        "regressor" : 1.0,
+                        "output": 1.0
                     }
                 },
                 "time": {
@@ -357,7 +359,7 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
                 }
             }
 
-        self.lclass_config = loss_config
+        self.loss_config = loss_config
 
         # Spectral reconstruction loss
         if 'spectral' in loss_config:
@@ -492,7 +494,7 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
                     ]
                 if self.autoencoder.out_channels == 4:
                     self.gen_loss_modules += [
-                        AuralossLoss(self.vmstft, target_key = 'reals',  input_key = 'decoded', name='vm_stft_loss', weight=self.loss_config['spectral']['weights']['mrstft'], decay = stft_loss_decay)
+                        AuralossLoss(self.vmstft, target_key = 'reals',  input_key = 'decoded', name='vm_stft_loss', weight=self.loss_config['spectral']['weights']['vm_mrstft'], decay = stft_loss_decay)
                                             
                     ]
 
@@ -677,6 +679,11 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
             if "mel" in eval_loss_config:
                 self.eval_losses["mel"] = auraloss.MelSTFTLoss(
                     sample_rate, **eval_loss_config["mel"])
+            if "spatial" in eval_loss_config and "spatial" in loss_config:
+                cfg = loss_config['spatial']
+                self.eval_losses["spatial_cov"] = foa_spatial.SpatialCovarianceLoss(
+                    sample_rate, **cfg.get('extractor', {}))
+
 
         self.validation_step_outputs = []
 
@@ -692,6 +699,8 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
             gen_params = list(self.autoencoder.parameters())
             if hasattr(self, "semantic_regressors"):
                 gen_params += list(self.semantic_regressors.parameters())
+            if hasattr(self, "spatial_regressor"):
+                gen_params += list(self.spatial_regressor.parameters())
             if self.use_generative_loss:
                 gen_params += list(self.generative_model.parameters())
             if self.use_contrastive_loss:
@@ -895,11 +904,12 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
                 else:
                     output = self.spatial_regressor(latents)
 
+                if output.shape[-1] != target.shape[-1]:
+                    target = torch.nn.functional.adaptive_avg_pool1d(target, output.shape[-1])
+
                 loss_info['spatial_output'] = output
                 loss_info['spatial_target'] = target
                 
-                pass
-
             if hasattr(self, "semantic_transforms"):
                 spectrogram = self.spectrogram(encoder_input)
                 for i, transform in enumerate(self.semantic_transforms):
