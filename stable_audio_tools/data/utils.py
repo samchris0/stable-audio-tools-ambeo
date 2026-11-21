@@ -149,6 +149,19 @@ class Stereo(nn.Module):
             signal = signal[:2, :]    
 
     return signal
+  
+class FOA(nn.Module):
+    def __call__(self,signal):
+        signal_shape = signal.shape
+        if len(signal_shape) == 1:
+            raise ValueError("FOA models must have at least four input channels")
+        
+        if signal_shape[0] < 4:
+            raise ValueError("FOA models must have at least four input channels")
+        elif signal_shape[0] > 4:
+            signal = signal[:4,:]
+        
+        return signal
 
 class VolumeNorm(nn.Module):
     "Volume normalization and augmentation of a signal [LUFS standard]"
@@ -166,9 +179,11 @@ class VolumeNorm(nn.Module):
         # avoid do normalisation for silence
         energy = torch.mean(signal**2)
         if energy < self.energy_threshold:
-            return signal
+            return self.declip(signal)
         
         input_loudness = self.loudness(signal)
+        if not torch.isfinite(input_loudness):
+            return self.declip(signal)
         # Generate a random target loudness within the specified range
         target_loudness = self.value + (torch.rand(1).item() * (self.gain_range[1] - self.gain_range[0]) + self.gain_range[0])
         delta_loudness = target_loudness - input_loudness

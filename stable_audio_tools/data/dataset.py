@@ -1,7 +1,10 @@
+#The local directory dataset/dataloader has been updated for ambisonics+ambisonics augmentation, other source datasets/loaders have not yet been updated.
+
 import importlib
 import numpy as np
 import io
 import json
+import math
 import os
 import dill
 import posixpath
@@ -18,7 +21,7 @@ from torch import nn
 from torchaudio import transforms as T
 from typing import Optional, Callable, List
 
-from .utils import Stereo, Mono, PhaseFlipper, PadCrop_Normalized_T, VolumeNorm, strip_trailing_silence
+from .utils import Stereo, Mono, FOA, PhaseFlipper, PadCrop_Normalized_T, VolumeNorm, strip_trailing_silence
 
 AUDIO_KEYS = ("flac", "wav", "mp3", "m4a", "ogg", "opus")
 
@@ -197,32 +200,43 @@ class SampleDataset(torch.utils.data.Dataset):
         volume_norm_param=(-16, 2),
         strip_silence=False,
         pad=True,
+        foa_mix=False,
+        phase_flip_probability=0.5,
     ):
         super().__init__()
         self.filenames = []
         self.sample_weights = []
 
-        self.augs = torch.nn.Sequential(
-            PhaseFlipper(),
-            #nn.Identity()
-        )
+        if not 0 <= phase_flip_probability <= 1:
+            raise ValueError("phase_flip_probability must be between 0 and 1")
+        
+        # Check:: Need to merge sample size expectations, change sample size param to clip length in seconds??
+        if foa_mix and (force_channels != "FOA"): #or sample_size != 30 * sample_rate)
+            raise ValueError("foa_mix requires audio_channels=4 and sample_size=30 * sample_rate")
+        self.foa_mix = foa_mix
+        self.augs = PhaseFlipper(p=phase_flip_probability)
 
 
         self.root_paths = []
 
-        self.pad_crop = PadCrop_Normalized_T(sample_size, sample_rate, randomize=random_crop, pad=pad)
+        self.pad_crop = PadCrop_Normalized_T(
+            sample_size, sample_rate, randomize=foa_mix or random_crop, pad=foa_mix or pad
+        )
         self.strip_silence = strip_silence
 
         self.force_channels = force_channels
 
         self.encoding = torch.nn.Sequential(
             Stereo() if self.force_channels == "stereo" else torch.nn.Identity(),
-            Mono() if self.force_channels == "mono" else torch.nn.Identity()
+            Mono() if self.force_channels == "mono" else torch.nn.Identity(),
+            FOA() if self.force_channels == "FOA" else torch.nn.Identity(),
         )
 
         self.sr = sample_rate
 
-        self.volume_norm = VolumeNorm(volume_norm_param, self.sr) if volume_norm else torch.nn.Identity()
+        self.volume_norm = (
+            VolumeNorm(volume_norm_param, self.sr) if volume_norm or foa_mix else torch.nn.Identity()
+        )
 
         self.custom_metadata_fns = {}
 
@@ -233,6 +247,8 @@ class SampleDataset(torch.utils.data.Dataset):
             self.sample_weights.extend([config.weight] * len(new_files))
             if config.custom_metadata_fn is not None:
                 self.custom_metadata_fns[config.path] = dill.dumps(config.custom_metadata_fn)
+        if foa_mix:
+            self.mix_weights = torch.tensor(self.sample_weights, dtype=torch.double)
 
         print(f'Found {len(self.filenames)} files')
 
@@ -250,36 +266,88 @@ class SampleDataset(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.filenames)
 
+    def _mix_foa_sources(self, idx):
+        indices = [idx]
+        num_extra = random.choices((0, 1, 2), weights=(0.5, 0.35, 0.15))[0]
+        if num_extra:
+            weights = self.mix_weights.clone()
+            weights[idx] = 0
+            num_extra = min(num_extra, int(torch.count_nonzero(weights > 0)))
+            if num_extra:
+                indices.extend(torch.multinomial(weights, num_extra, replacement=False).tolist())
+
+        sources = []
+        for source_idx in indices:
+            filename = self.filenames[source_idx]
+            clip = self.encoding(self.load_file(filename))
+            if self.strip_silence:
+                clip = strip_trailing_silence(clip, self.sr)
+            clip, t_start, t_end, seconds_start, seconds_total, mask = self.pad_crop(clip)
+            if not torch.isfinite(clip).all() or is_silence(clip):
+                raise ValueError(f"Silent or non-finite FOA clip from {filename}")
+
+            angle = random.uniform(0, math.tau)
+            cosine, sine = math.cos(angle), math.sin(angle)
+            # ACN order is W, Y, Z, X. Rotate the X/Y components about Z.
+            w, y, z, x = clip.unbind(0)
+            rotated = torch.stack((w, sine * x + cosine * y, z, cosine * x - sine * y))
+            rms = rotated.square().mean().sqrt()
+            level_db = 0.0 if source_idx == idx else -random.uniform(5, 15)
+
+            if source_idx == idx:
+                mixed = rotated
+                primary_rms = rms
+                timing = (t_start, t_end, seconds_start, seconds_total)
+                padding_mask = mask
+            else:
+                gain = primary_rms / rms * 10 ** (level_db / 20)
+                mixed.add_(rotated * gain)
+                padding_mask = torch.maximum(padding_mask, mask)
+
+            sources.append({
+                "path": filename,
+                "timestamps": (t_start, t_end),
+                "rotation_radians": angle,
+                "relative_rms_db": level_db,
+            })
+
+        mixed = self.volume_norm(mixed)
+        return mixed, (*timing, padding_mask), sources
+
     def __getitem__(self, idx):
+        for _ in range(16):
+            sample = self._get_sample(idx)
+            if sample is not None:
+                return sample
+            idx = random.randrange(len(self))
+        raise RuntimeError("Could not produce a valid audio sample after 16 attempts")
+
+    def _get_sample(self, idx):
         audio_filename = self.filenames[idx]
         try:
             start_time = time.time()
-            audio = self.load_file(audio_filename)
-
-            audio = self.volume_norm(audio)
-
-            if self.strip_silence:
-                audio = strip_trailing_silence(audio, self.sr)
-
-            audio, t_start, t_end, seconds_start, seconds_total, padding_mask = self.pad_crop(audio)
+            if self.foa_mix:
+                audio, times, sources = self._mix_foa_sources(idx)
+            else:
+                audio = self.volume_norm(self.load_file(audio_filename))
+                if self.strip_silence:
+                    audio = strip_trailing_silence(audio, self.sr)
+                audio, *times = self.pad_crop(audio)
+            t_start, t_end, seconds_start, seconds_total, padding_mask = times
 
             # Check for silence
             if is_silence(audio):
-                return self[random.randrange(len(self))]
+                return None
 
-            # Run augmentations on this sample (including random crop)
-            if self.augs is not None:
-                audio = self.augs(audio)
-
-            audio = audio.clamp(-1, 1)
-
-            # Encode the file to assist in prediction
-            if self.encoding is not None:
-                audio = self.encoding(audio)
+            audio = self.augs(audio)
+            if not self.foa_mix:
+                audio = self.encoding(audio.clamp(-1, 1))
 
             info = {}
 
             info["path"] = audio_filename
+            if self.foa_mix:
+                info["mix_sources"] = sources
 
             for root_path in self.root_paths:
                 if root_path in audio_filename:
@@ -302,7 +370,7 @@ class SampleDataset(torch.utils.data.Dataset):
                     info.update(custom_metadata)
 
                 if "__reject__" in info and info["__reject__"]:
-                    return self[random.randrange(len(self))]
+                    return None
 
                 # Provide audio inputs as their own dictionary to be merged into info, each audio element will be normalized in the same way as the main audio
                 if "__audio__" in info:
@@ -319,7 +387,7 @@ class SampleDataset(torch.utils.data.Dataset):
             return (audio, info)
         except Exception as e:
             print(f'Couldn\'t load file {audio_filename}: {e}')
-            return self[random.randrange(len(self))]
+            return None
 
 class PreEncodedDataset(torch.utils.data.Dataset):
     def __init__(
@@ -914,6 +982,7 @@ class WebDatasetDataLoader():
             augs = torch.nn.Sequential(
                 Stereo() if self.force_channels == "stereo" else torch.nn.Identity(),
                 Mono() if self.force_channels == "mono" else torch.nn.Identity(),
+                FOA() if self.force_channels == "FOA" else torch.nn.Identity(),
                 VolumeNorm(self.volume_norm_param, self.sample_rate) if self.volume_norm else torch.nn.Identity(),
                 PhaseFlipper() if self.augment_phase else torch.nn.Identity()
             )
@@ -961,10 +1030,13 @@ def create_dataloader_from_config(dataset_config, batch_size, sample_size, sampl
 
     assert dataset_type is not None, "Dataset type must be specified in dataset config"
 
-    if audio_channels == 1:
-        force_channels = "mono"
-    else:
+    
+    if audio_channels == 2:
         force_channels = "stereo"
+    elif audio_channels == 4:
+        force_channels = "FOA"
+    else:
+        force_channels = "mono"
 
     if dataset_type == "audio_dir":
 
@@ -1009,6 +1081,8 @@ def create_dataloader_from_config(dataset_config, batch_size, sample_size, sampl
             volume_norm_param=dataset_config.get("volume_norm_param", (-16, 2)),
             strip_silence=dataset_config.get("strip_silence", False),
             pad=pad,
+            foa_mix=dataset_config.get("foa_mix", False),
+            phase_flip_probability=dataset_config.get("phase_flip_probability", 0.5),
         )
 
         sampler = _maybe_create_weighted_sampler(train_set)

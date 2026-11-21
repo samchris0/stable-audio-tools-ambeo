@@ -342,14 +342,6 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
                         "vm_mrstft": 1.0
                     }
                 },
-                "spatial": {
-                    "type": "foa_spatial",
-                    "config" : {},
-                    "weights" : {
-                        "regressor" : 1.0,
-                        "output": 1.0
-                    }
-                },
                 "time": {
                     "type": "l1",
                     "config": {},
@@ -358,6 +350,16 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
                     }
                 }
             }
+
+        if self.autoencoder.out_channels == 4:
+            loss_config["spatial"] = {
+                    "type": "foa_spatial",
+                    "config" : {},
+                    "weights" : {
+                        "regressor" : 1.0,
+                        "output": 1.0
+                    }
+                }
 
         self.loss_config = loss_config
 
@@ -683,7 +685,6 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
                 cfg = loss_config['spatial']
                 self.eval_losses["spatial_cov"] = foa_spatial.SpatialCovarianceLoss(
                     sample_rate, **cfg.get('extractor', {}))
-
 
         self.validation_step_outputs = []
 

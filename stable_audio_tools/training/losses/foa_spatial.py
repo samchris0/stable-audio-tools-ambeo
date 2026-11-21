@@ -96,18 +96,19 @@ class FOASpatialCovariance(nn.Module):
         return Cr, Ci
 
     def features(self, x, n_frames=None):
-        Cr, Ci = self.covariance(x, n_frames)
-        E = torch.stack([Cr[:, i, i] for i in range(4)], 1)  # (B, 4, bands, T')
-        logE = torch.log(E + self.eps)
-        out = {
-            "level": logE[:, 0],                       # (B, bands, T')
-            "rel": logE[:, 1:] - logE[:, :1],          # (B, 3, bands, T')
-        }
-        denom = lambda i, j: torch.sqrt(E[:, i] * E[:, j] + self.eps)
-        out["coh"] = torch.stack([Cr[:, i, j] / denom(i, j) for i, j in PAIRS], 1)
-        if self.include_imag:
-            out["coh_im"] = torch.stack([Ci[:, i, j] / denom(i, j) for i, j in PAIRS], 1)
-        return out
+        with torch.autocast(device_type=x.device.type, enabled=False):
+            Cr, Ci = self.covariance(x, n_frames)
+            E = torch.stack([Cr[:, i, i] for i in range(4)], 1)  # (B, 4, bands, T')
+            logE = torch.log(E + self.eps)
+            out = {
+                "level": logE[:, 0],                       # (B, bands, T')
+                "rel": logE[:, 1:] - logE[:, :1],          # (B, 3, bands, T')
+            }
+            denom = lambda i, j: torch.sqrt(E[:, i] * E[:, j] + self.eps)
+            out["coh"] = torch.stack([Cr[:, i, j] / denom(i, j) for i, j in PAIRS], 1)
+            if self.include_imag:
+                out["coh_im"] = torch.stack([Ci[:, i, j] / denom(i, j) for i, j in PAIRS], 1)
+            return out
 
     def forward(self, x, n_frames=None):
         """Flat feature tensor (B, out_channels, T') -- the regression target for latents."""
