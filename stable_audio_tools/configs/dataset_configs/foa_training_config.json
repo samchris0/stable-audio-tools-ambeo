@@ -1,0 +1,17 @@
+{
+  "dataset_type": "audio_dir",
+  "epoch_size": 10000,
+  "datasets": [
+    {
+      "id": "foa_training",
+      "path": "/absolute/path/to/training/wavs",
+      "weight": 1.0
+    }
+  ],
+  "random_crop": true,
+  "foa_mix": true,
+  "volume_norm_param": [-16, 2],
+  "phase_flip_probability": 0.5,
+  "strip_silence": false,
+  "drop_last": true
+}

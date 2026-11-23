@@ -45,7 +45,7 @@ train = [
     "prefigure==0.0.9",
     "pytorch_lightning==2.5.5",
     "torchmetrics==0.11.4",
-    "wandb==0.15.4",
+    "wandb==0.22.3",
     "webdataset==0.2.100",
 ]
 ui = [

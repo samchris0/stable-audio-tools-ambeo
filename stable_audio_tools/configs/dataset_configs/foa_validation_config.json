@@ -1,0 +1,15 @@
+{
+  "dataset_type": "audio_dir",
+  "datasets": [
+    {
+      "id": "foa_validation",
+      "path": "/absolute/path/to/validation/wavs"
+    }
+  ],
+  "random_crop": false,
+  "foa_mix": false,
+  "volume_norm": false,
+  "phase_flip_probability": 0.0,
+  "strip_silence": false,
+  "drop_last": false
+}

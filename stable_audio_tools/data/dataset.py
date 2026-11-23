@@ -209,10 +209,12 @@ class SampleDataset(torch.utils.data.Dataset):
 
         if not 0 <= phase_flip_probability <= 1:
             raise ValueError("phase_flip_probability must be between 0 and 1")
-        
-        # Check:: Need to merge sample size expectations, change sample size param to clip length in seconds??
-        if foa_mix and (force_channels != "FOA"): #or sample_size != 30 * sample_rate)
-            raise ValueError("foa_mix requires audio_channels=4 and sample_size=30 * sample_rate")
+
+        if sample_size <= 0:
+            raise ValueError("sample_size must be greater than zero")
+        if foa_mix and force_channels != "FOA":
+            raise ValueError("foa_mix requires audio_channels=4")
+        self.sample_size = sample_size
         self.foa_mix = foa_mix
         self.augs = PhaseFlipper(p=phase_flip_probability)
 
@@ -252,10 +254,15 @@ class SampleDataset(torch.utils.data.Dataset):
 
         print(f'Found {len(self.filenames)} files')
 
-    def load_file(self, filename):
+    def load_file(self, filename, *, frame_offset=0, num_frames=-1):
         ext = filename.split(".")[-1]
 
-        audio, in_sr = torchaudio.load(filename, format=ext)
+        audio, in_sr = torchaudio.load(
+            filename,
+            frame_offset=frame_offset,
+            num_frames=num_frames,
+            format=ext,
+        )
 
         if in_sr != self.sr:
             resample_tf = T.Resample(in_sr, self.sr)
@@ -265,6 +272,39 @@ class SampleDataset(torch.utils.data.Dataset):
 
     def __len__(self):
         return len(self.filenames)
+
+    def _load_foa_clip(self, filename, sample_size):
+        """Load only the source frames needed for one training clip when possible."""
+        if not self.strip_silence and path.splitext(filename)[1].lower() == ".wav":
+            metadata = torchaudio.info(filename)
+            if metadata.num_frames > 0 and metadata.sample_rate > 0:
+                source_clip_frames = math.ceil(
+                    sample_size * metadata.sample_rate / self.sr
+                )
+                max_offset = max(0, metadata.num_frames - source_clip_frames)
+                frame_offset = random.randint(0, max_offset)
+                clip = self.load_file(
+                    filename,
+                    frame_offset=frame_offset,
+                    num_frames=source_clip_frames,
+                )
+                clip = self.encoding(clip[:, :sample_size])
+                clip, _, _, _, _, mask = self.pad_crop(clip)
+
+                frame_end = min(frame_offset + source_clip_frames, metadata.num_frames)
+                return (
+                    clip,
+                    frame_offset / metadata.num_frames,
+                    frame_end / metadata.num_frames,
+                    math.floor(frame_offset / metadata.sample_rate),
+                    math.ceil(metadata.num_frames / metadata.sample_rate),
+                    mask,
+                )
+
+        clip = self.encoding(self.load_file(filename))
+        if self.strip_silence:
+            clip = strip_trailing_silence(clip, self.sr)
+        return self.pad_crop(clip)
 
     def _mix_foa_sources(self, idx):
         indices = [idx]
@@ -279,10 +319,9 @@ class SampleDataset(torch.utils.data.Dataset):
         sources = []
         for source_idx in indices:
             filename = self.filenames[source_idx]
-            clip = self.encoding(self.load_file(filename))
-            if self.strip_silence:
-                clip = strip_trailing_silence(clip, self.sr)
-            clip, t_start, t_end, seconds_start, seconds_total, mask = self.pad_crop(clip)
+            clip, t_start, t_end, seconds_start, seconds_total, mask = self._load_foa_clip(
+                filename, self.sample_size
+            )
             if not torch.isfinite(clip).all() or is_silence(clip):
                 raise ValueError(f"Silent or non-finite FOA clip from {filename}")
 
@@ -1012,14 +1051,16 @@ class WebDatasetDataLoader():
         
         return sample
 
-def _maybe_create_weighted_sampler(dataset):
-    """Create a WeightedRandomSampler if any dataset has non-default weights, otherwise return None."""
+def _maybe_create_weighted_sampler(dataset, epoch_size=None):
+    """Sample with replacement when an epoch size or source weights are specified."""
     weights = dataset.sample_weights
-    if not weights or all(w == 1.0 for w in weights):
+    if epoch_size is not None and (isinstance(epoch_size, bool) or not isinstance(epoch_size, int) or epoch_size <= 0):
+        raise ValueError("epoch_size must be a positive integer")
+    if not weights or (epoch_size is None and all(w == 1.0 for w in weights)):
         return None
     sampler = torch.utils.data.WeightedRandomSampler(
         weights=weights,
-        num_samples=len(weights),
+        num_samples=epoch_size if epoch_size is not None else len(weights),
         replacement=True,
     )
     return sampler
@@ -1085,7 +1126,7 @@ def create_dataloader_from_config(dataset_config, batch_size, sample_size, sampl
             phase_flip_probability=dataset_config.get("phase_flip_probability", 0.5),
         )
 
-        sampler = _maybe_create_weighted_sampler(train_set)
+        sampler = _maybe_create_weighted_sampler(train_set, dataset_config.get("epoch_size"))
 
         return torch.utils.data.DataLoader(train_set, batch_size, shuffle=shuffle if sampler is None else False,
                                 sampler=sampler,
@@ -1139,7 +1180,7 @@ def create_dataloader_from_config(dataset_config, batch_size, sample_size, sampl
             tokenizers=tokenizers,
         )
 
-        sampler = _maybe_create_weighted_sampler(train_set)
+        sampler = _maybe_create_weighted_sampler(train_set, dataset_config.get("epoch_size"))
 
         return torch.utils.data.DataLoader(train_set, batch_size, shuffle=shuffle if sampler is None else False,
                                 sampler=sampler,

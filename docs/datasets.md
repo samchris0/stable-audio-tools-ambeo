@@ -238,8 +238,13 @@ Any local dataset type (`audio_dir`, `pre_encoded`) supports per-source sampling
 
 When any weight differs from 1.0, a `WeightedRandomSampler` is created automatically, replacing the default shuffle. This is useful for balancing datasets of different sizes or oversampling important data.
 
+Set the top-level `epoch_size` to a positive integer to choose how many samples are drawn per epoch. This enables sampling with replacement, even when all weights are 1. Each draw can select any file, including one already selected in the same epoch; some files may not be selected. Audio files are loaded and augmented again on each draw, including a new random crop when enabled. Source weights still apply. The number of training batches is `epoch_size` divided by batch size, rounded down when `drop_last` is true (the default), or up otherwise. With `drop_last`, the final incomplete batch is discarded.
+
+Without `epoch_size`, unweighted local datasets visit each file once per epoch before any incomplete final batch is dropped. Weighted datasets instead draw with replacement, with the number of draws equal to the number of files. Failed or rejected samples can also be replaced by another file.
+
 ```json
 {
+    "epoch_size": 10000,
     "datasets": [
         { "id": "large_dataset", "path": "/path/a/", "weight": 1.0 },
         { "id": "small_important", "path": "/path/b/", "weight": 5.0 }
