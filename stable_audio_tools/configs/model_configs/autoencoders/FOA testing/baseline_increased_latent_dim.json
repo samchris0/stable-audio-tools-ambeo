@@ -51,8 +51,12 @@
                 }
             }
         },
+        "eval_loss_configs": {
+            "spatial": {}
+        },
+
         "demo": {
-            "demo_every": 2000
+            "demo_every": 100000
         }
     }
 }
