@@ -1,7 +1,16 @@
 # Disable HuggingFace progress bars BEFORE any imports
 # This must be at the very top to take effect
 import os
+import warnings
+
 os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+
+warnings.filterwarnings(
+    "ignore",
+    message=r"pkg_resources is deprecated as an API.*",
+    category=UserWarning,
+    module=r"torchmetrics\.utilities\.imports",
+)
 
 import torch
 import json
@@ -136,6 +145,7 @@ def main():
             monitor="val/stft",
             mode="min",
             save_last=True,
+            #save_weights_only=True, #test, take this out eventually
             filename="epoch={epoch}-step={step}-val_stft={val/stft:.4f}",
             auto_insert_metric_name=False,
         )
@@ -147,6 +157,7 @@ def main():
             monitor="val/stft",
             mode="min",
             save_last=True,
+            #save_weights_only=True, #test, take this out eventually
             filename="epoch={epoch}-step={step}-val_stft={val/stft:.4f}",
             auto_insert_metric_name=False,
         )

@@ -35,9 +35,9 @@
             "spectral": {
                 "type": "mrstft",
                 "config": {
-                    "fft_sizes": [2048, 1024, 512, 256, 128, 64, 32],
-                    "hop_sizes": [512, 256, 128, 64, 32, 16, 8],
-                    "win_lengths": [2048, 1024, 512, 256, 128, 64, 32],
+                    "fft_sizes": [2048, 512, 128],
+                    "hop_sizes": [512, 128, 32],
+                    "win_lengths": [2048, 512, 128],
                     "perceptual_weighting": true
                 },
                 "weights": {
