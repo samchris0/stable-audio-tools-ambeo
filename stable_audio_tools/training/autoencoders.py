@@ -805,8 +805,23 @@ class AutoencoderTrainingWrapper(pl.LightningModule):
         
         # global mean = global_sum / global_count
         for k in keys:
-            val = (totals_all[k] / counts_all[k]).item()
-            log_metric(self.logger, f"val/{k}", val, step=self.global_step)
+            val = totals_all[k] / counts_all[k]
+            metric_name = f"val/{k}"
+
+            self.log(
+                metric_name,
+                val,
+                prog_bar=True,
+                logger=True,
+                sync_dist=False,
+            )
+
+            log_metric(
+                self.logger,
+                metric_name,
+                val.item(),
+                step=self.global_step,
+            )
         
         self.validation_step_outputs.clear()
 

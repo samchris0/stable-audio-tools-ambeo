@@ -128,13 +128,16 @@ class TanhBottleneck(Bottleneck):
     def decode(self, x):
         return x
 
-def vae_sample(mean, scale):
+def vae_sample(mean, scale, training):
         stdev = nn.functional.softplus(scale) + 1e-4
         var = stdev * stdev
         logvar = torch.log(var)
-        latents = torch.randn_like(mean) * stdev + mean
+        if training:
+            latents = torch.randn_like(mean) * stdev + mean
+        else:
+            latents = mean
 
-        kl = (mean * mean + var - logvar - 1).sum(1).mean()
+        kl = (mean   * mean + var - logvar - 1).sum(1).mean()
 
         return latents, kl
 
@@ -145,9 +148,10 @@ class VAEBottleneck(Bottleneck):
     def encode(self, x, return_info=False, **kwargs):
         info = {}
 
+        training = self.training
         mean, scale = x.chunk(2, dim=1)
 
-        x, kl = vae_sample(mean, scale)
+        x, kl = vae_sample(mean, scale, training)
 
         info["kl"] = kl
 

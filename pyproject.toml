@@ -70,3 +70,5 @@ torch = [
 torchaudio = [
   { index = "pytorch-cu126", marker = "(sys_platform == 'linux' and platform_machine == 'x86_64') or sys_platform == 'win32'" }
 ]
+progressbar = { path = "vendor/progressbar-2.5.tar.gz" }
+randomname = { path = "vendor/randomname-0.2.1.tar.gz" }

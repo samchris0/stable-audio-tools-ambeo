@@ -4,13 +4,14 @@
   "datasets": [
     {
       "id": "foa_training",
-      "path": "/absolute/path/to/training/wavs",
+      "path": "C:\\Users\\schristianson\\Desktop\\VAE\\Datasets\\Training",
       "weight": 1.0
     }
   ],
   "random_crop": true,
   "foa_mix": true,
-  "volume_norm_param": [-16, 2],
+  "volume_norm": true,
+  "volume_norm_param": [-12, 4],
   "phase_flip_probability": 0.5,
   "strip_silence": false,
   "drop_last": true

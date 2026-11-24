@@ -88,7 +88,7 @@ def main():
             sample_rate=model_config["sample_rate"],
             sample_size=model_config["sample_size"],
             audio_channels=model_config.get("audio_channels", 2),
-            shuffle=True
+            shuffle=False
         )
 
     if args.pretrained_ckpt_path:
@@ -127,8 +127,30 @@ def main():
     else:
         logger = None
         checkpoint_dir = args.save_dir if args.save_dir else None
-        
-    ckpt_callback = pl.callbacks.ModelCheckpoint(every_n_train_steps=args.checkpoint_every, dirpath=checkpoint_dir, save_top_k=-1)
+
+    if args.ckpt_every_n_epochs > 0:
+        ckpt_callback = pl.callbacks.ModelCheckpoint(
+            every_n_epochs=1,
+            dirpath=checkpoint_dir,
+            save_top_k=args.save_top_k,
+            monitor="val/stft",
+            mode="min",
+            save_last=True,
+            filename="epoch={epoch}-step={step}-val_stft={val/stft:.4f}",
+            auto_insert_metric_name=False,
+        )
+    else: 
+        ckpt_callback = pl.callbacks.ModelCheckpoint(
+            every_n_train_steps=args.checkpoint_every,
+            dirpath=checkpoint_dir,
+            save_top_k=args.save_top_k,
+            monitor="val/stft",
+            mode="min",
+            save_last=True,
+            filename="epoch={epoch}-step={step}-val_stft={val/stft:.4f}",
+            auto_insert_metric_name=False,
+        )
+    
     save_model_config_callback = ModelConfigEmbedderCallback(model_config)
 
     if args.val_dataset_config:
@@ -216,6 +238,7 @@ def main():
         gradient_clip_val=args.gradient_clip_val,
         reload_dataloaders_every_n_epochs = 0,
         num_sanity_val_steps=0, # If you need to debug validation, change this line
+        max_steps=args.max_steps,
         **val_args      
     )
 

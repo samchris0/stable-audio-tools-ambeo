@@ -65,7 +65,13 @@
                 }
             }
         },
+        
         "eval_loss_configs": {
+            "stft": {
+                "fft_size": 1024,
+                "hop_size": 256,
+                "win_length": 1024
+            },
             "spatial": {}
         },
 

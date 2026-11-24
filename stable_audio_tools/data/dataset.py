@@ -3,6 +3,7 @@
 import importlib
 import numpy as np
 import io
+import hashlib
 import json
 import math
 import os
@@ -194,8 +195,9 @@ class SampleDataset(torch.utils.data.Dataset):
         configs,
         sample_size=65536,
         sample_rate=48000,
+        validation_seed=None,
         random_crop=True,
-        force_channels="stereo",
+        force_channels=None,
         volume_norm=False,
         volume_norm_param=(-16, 2),
         strip_silence=False,
@@ -206,6 +208,8 @@ class SampleDataset(torch.utils.data.Dataset):
         super().__init__()
         self.filenames = []
         self.sample_weights = []
+
+        self.validation_seed = validation_seed
 
         if not 0 <= phase_flip_probability <= 1:
             raise ValueError("phase_flip_probability must be between 0 and 1")
@@ -272,6 +276,13 @@ class SampleDataset(torch.utils.data.Dataset):
 
     def __len__(self):
         return len(self.filenames)
+
+    def _validation_item_seed(self, idx):
+        filename = os.path.basename(self.filenames[idx])
+        digest = hashlib.sha256(filename.encode("utf-8")).digest()
+        file_seed = int.from_bytes(digest[:8], "big")
+
+        return self.validation_seed + file_seed
 
     def _load_foa_clip(self, filename, sample_size):
         """Load only the source frames needed for one training clip when possible."""
@@ -354,12 +365,33 @@ class SampleDataset(torch.utils.data.Dataset):
         return mixed, (*timing, padding_mask), sources
 
     def __getitem__(self, idx):
+        if self.validation_seed is None:
+            return self._getitem_impl(idx)
+
+        python_state = random.getstate()
+        torch_state = torch.random.get_rng_state()
+
+        try:
+            item_seed = self._validation_item_seed(idx)
+            random.seed(item_seed)
+            torch.manual_seed(item_seed)
+            return self._getitem_impl(idx)
+        finally:
+            random.setstate(python_state)
+            torch.random.set_rng_state(torch_state)
+
+    def _getitem_impl(self, idx):
         for _ in range(16):
             sample = self._get_sample(idx)
+
             if sample is not None:
                 return sample
+
             idx = random.randrange(len(self))
-        raise RuntimeError("Could not produce a valid audio sample after 16 attempts")
+
+        raise RuntimeError(
+            "Could not produce a valid audio sample after 16 attempts"
+        )
 
     def _get_sample(self, idx):
         audio_filename = self.filenames[idx]
@@ -1071,6 +1103,13 @@ def create_dataloader_from_config(dataset_config, batch_size, sample_size, sampl
 
     assert dataset_type is not None, "Dataset type must be specified in dataset config"
 
+    loader_generator = None
+    validation_seed = dataset_config.get("validation_seed")
+
+    if validation_seed is not None:
+        shuffle = False
+        loader_generator = torch.Generator()
+        loader_generator.manual_seed(validation_seed)
     
     if audio_channels == 2:
         force_channels = "stereo"
@@ -1111,26 +1150,27 @@ def create_dataloader_from_config(dataset_config, batch_size, sample_size, sampl
                     weight=audio_dir_config.get("weight", 1.0),
                 )
             )
-
+        
         train_set = SampleDataset(
             configs,
             sample_rate=sample_rate,
             sample_size=sample_size,
-            random_crop=dataset_config.get("random_crop", True),
+            validation_seed=validation_seed,
+            random_crop=dataset_config.get("random_crop", False),
             force_channels=force_channels,
             volume_norm=dataset_config.get("volume_norm", False),
             volume_norm_param=dataset_config.get("volume_norm_param", (-16, 2)),
             strip_silence=dataset_config.get("strip_silence", False),
             pad=pad,
             foa_mix=dataset_config.get("foa_mix", False),
-            phase_flip_probability=dataset_config.get("phase_flip_probability", 0.5),
+            phase_flip_probability=dataset_config.get("phase_flip_probability", 0),
         )
 
         sampler = _maybe_create_weighted_sampler(train_set, dataset_config.get("epoch_size"))
 
         return torch.utils.data.DataLoader(train_set, batch_size, shuffle=shuffle if sampler is None else False,
-                                sampler=sampler,
-                                num_workers=num_workers, persistent_workers=True, pin_memory=True, drop_last=dataset_config.get("drop_last", True), collate_fn=collation_fn)
+                                sampler=sampler, num_workers=num_workers, persistent_workers=True, pin_memory=True, 
+                                drop_last=dataset_config.get("drop_last", True), collate_fn=collation_fn, generator=loader_generator,)
 
     elif dataset_type == "pre_encoded":
 
