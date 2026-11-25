@@ -1202,7 +1202,7 @@ class AutoencoderDemoCallback(pl.Callback):
 
         self.last_demo_step = trainer.global_step
         module.eval()
-
+        
         try:
             demo_iter = iter(self.demo_dl)
             demo_reals, json  = next(demo_iter)
@@ -1215,7 +1215,8 @@ class AutoencoderDemoCallback(pl.Callback):
             if demo_reals.shape[0] > self.max_demos:
                 demo_reals = demo_reals[:self.max_demos,...]
 
-            demo_reals = append_random_linear_chirps(demo_reals, self.sample_rate, n_chirps = 1)
+            #No linear chirps for 
+            #demo_reals = append_random_linear_chirps(demo_reals, self.sample_rate, n_chirps = 1)
 
             encoder_input = demo_reals
             encoder_input = encoder_input.to(module.device)

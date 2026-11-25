@@ -1,6 +1,6 @@
 {
   "dataset_type": "audio_dir",
-  "epoch_size": 10000,
+  "epoch_size": 5000,
   "datasets": [
     {
       "id": "foa_training",

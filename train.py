@@ -120,7 +120,9 @@ def main():
 
     if args.logger == 'wandb':
         logger = pl.loggers.WandbLogger(project=args.name)
-        logger.watch(training_wrapper)
+        
+        # records per layer/step training histograms, takes up a lot of space. Disable for now.
+        #logger.watch(training_wrapper)
     
         if args.save_dir and isinstance(logger.experiment.id, str):
             checkpoint_dir = os.path.join(args.save_dir, logger.experiment.project, logger.experiment.id, "checkpoints") 
@@ -178,7 +180,13 @@ def main():
     args_dict.update({"val_dataset_config": val_dataset_config})
 
     if args.logger == 'wandb':
-        push_wandb_config(logger, args_dict)
+        # Does not allow for config changes, use command below instead
+        #push_wandb_config(logger, args_dict)
+        
+        logger.experiment.config.update(
+            args_dict,
+            allow_val_change=True,
+        )
     elif args.logger == 'comet':
         logger.log_hyperparams(args_dict)
 
