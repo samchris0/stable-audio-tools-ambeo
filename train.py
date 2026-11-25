@@ -119,7 +119,10 @@ def main():
     exc_callback = ExceptionCallback()
 
     if args.logger == 'wandb':
-        logger = pl.loggers.WandbLogger(project=args.name)
+        logger = pl.loggers.WandbLogger(
+            project=args.project,  
+            name=args.name                        
+        )
         
         # records per layer/step training histograms, takes up a lot of space. Disable for now.
         #logger.watch(training_wrapper)

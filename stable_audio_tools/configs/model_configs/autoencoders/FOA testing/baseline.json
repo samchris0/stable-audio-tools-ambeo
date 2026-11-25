@@ -47,6 +47,14 @@
                     "vm_mrstft": 1.0
                 }
             },
+            "spatial": {
+                "type": "foa_spatial",
+                "config": {},
+                "weights": {
+                    "regressor": 1.0,
+                    "output": 1.0
+                }
+            },
             "time": {
                 "type": "l1",
                 "weights": {

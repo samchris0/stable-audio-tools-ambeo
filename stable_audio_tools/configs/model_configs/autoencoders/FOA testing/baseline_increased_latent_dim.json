@@ -7,6 +7,7 @@
         "encoder": {
             "type": "dac",
             "config": {
+                "in_channels": 4,
                 "latent_dim": 128,
                 "d_model": 128,
                 "strides": [4, 8, 8, 8]
@@ -17,7 +18,8 @@
             "config": {
                 "latent_dim": 64,
                 "channels": 768,
-                "rates": [8, 8, 8, 4]
+                "rates": [8, 8, 8, 4],
+                "out_channels": 4
             }
         },
         "bottleneck": {
@@ -25,7 +27,7 @@
         },
         "latent_dim": 64,
         "downsampling_ratio": 2048,
-        "io_channels": 1
+        "io_channels": 4
     },
     "training": {
         "learning_rate": 1e-4,
@@ -41,7 +43,16 @@
                     "perceptual_weighting": true
                 },
                 "weights": {
-                    "mrstft": 1.0
+                    "mrstft": 1.0,
+                    "vm_mrstft": 1.0
+                }
+            },
+            "spatial": {
+                "type": "foa_spatial",
+                "config": {},
+                "weights": {
+                    "regressor": 1.0,
+                    "output": 1.0
                 }
             },
             "time": {
